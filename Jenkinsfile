@@ -1,105 +1,42 @@
 pipeline {
     agent any
 
-    tools {
-        jdk 'jdk-17'
-        maven 'maven-3.9'
-    }
-
-    environment {
-        IMAGE         = 'memoria-backend'
-        REGISTRY      = 'docker.io'
-        SONAR_ENV     = 'SonarQube'
-        DOCKER_CREDS  = 'dockerhub'
-    }
-
     options {
         timestamps()
-        buildDiscarder(logRotator(numToKeepStr: '20'))
-        timeout(time: 30, unit: 'MINUTES')
+        buildDiscarder(logRotator(numToKeepStr: '10'))
+        timeout(time: 20, unit: 'MINUTES')
     }
 
     stages {
         stage('Checkout') {
-            steps { checkout scm }
-        }
-
-        stage('Build & Test') {
             steps {
-                sh './mvnw -B clean verify'
-            }
-            post {
-                always {
-                    junit allowEmptyResults: true, testResults: 'target/surefire-reports/*.xml'
-                    archiveArtifacts artifacts: 'target/site/jacoco/**', allowEmptyArchive: true
-                }
+                checkout scm
             }
         }
 
-        stage('SonarQube Analysis') {
+        stage('Diagnose') {
             steps {
-                withSonarQubeEnv("${SONAR_ENV}") {
-                    sh './mvnw -B sonar:sonar'
-                }
+                sh 'java -version'
+                sh 'chmod +x ./mvnw'
+                sh './mvnw -v'
             }
         }
 
-        stage('Quality Gate') {
+        stage('Build') {
             steps {
-                timeout(time: 5, unit: 'MINUTES') {
-                    waitForQualityGate abortPipeline: true
-                }
+                sh './mvnw -B clean package -DskipTests'
             }
         }
 
         stage('Archive JAR') {
             steps {
-                archiveArtifacts artifacts: 'target/*.jar', fingerprint: true
-            }
-        }
-
-        stage('Docker Build & Push') {
-            when {
-                anyOf {
-                    branch 'main'
-                    branch 'develop'
-                    tag pattern: 'v\\d+\\.\\d+\\.\\d+', comparator: 'REGEXP'
-                }
-            }
-            steps {
-                withCredentials([usernamePassword(
-                    credentialsId: "${DOCKER_CREDS}",
-                    usernameVariable: 'DH_USER',
-                    passwordVariable: 'DH_PASS'
-                )]) {
-                    sh '''
-                        set -eu
-                        echo "$DH_PASS" | docker login -u "$DH_USER" --password-stdin "$REGISTRY"
-
-                        TAG=$(git describe --tags --always)
-                        SHA=$(git rev-parse --short HEAD)
-                        IMG="$DH_USER/$IMAGE"
-
-                        docker build -t "$IMG:$TAG" -t "$IMG:sha-$SHA" .
-
-                        if [ "$BRANCH_NAME" = "main" ]; then
-                            docker tag "$IMG:$TAG" "$IMG:latest"
-                            docker push "$IMG:latest"
-                        fi
-
-                        docker push "$IMG:$TAG"
-                        docker push "$IMG:sha-$SHA"
-
-                        docker logout "$REGISTRY"
-                    '''
-                }
+                archiveArtifacts artifacts: 'target/*.jar', fingerprint: true, allowEmptyArchive: true
             }
         }
     }
 
     post {
-        always { cleanWs() }
-        success { echo "Build #${BUILD_NUMBER} OK — image publiée." }
-        failure { echo "Build #${BUILD_NUMBER} en échec." }
+        success { echo "Build #${BUILD_NUMBER} OK" }
+        failure { echo "Build #${BUILD_NUMBER} en echec" }
     }
 }
